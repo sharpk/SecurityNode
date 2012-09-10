@@ -5,8 +5,12 @@
 
 #include <JeeLib.h>
 
-#define POLL_RATE 2000  // in ms
 #define MASTER_NODEID 1
+#define POLL_RATE 500  // in ms
+#define SEND_THRESHOLD 2 // in ADC counts
+
+// according to http://arduino.cc/en/Reference/Word
+#define WORD_MAX 65535
 
 byte pending;
 word outData[2];
@@ -42,6 +46,9 @@ void setup() {
 }
 
 void loop() {
+  word last_digital = 0;
+  word last_analog = 0;
+
   //rf12_recvDone();
   if (rf12_recvDone() && rf12_crc == 0) {
     // if we received something see if it's the right size 
@@ -49,17 +56,22 @@ void loop() {
     if (rf12_len == 2) {
 	  switch (rf12_data[0]) {
 	    case 'm':
+		  // motion sensor control
 	      if (rf12_data[1] == '1')
 		    port1.digiWrite2(1);
 	      else
 		    port1.digiWrite2(0);
 		  break;
 		case 's':
+		  // siren control
 	      if (rf12_data[1] == '1')
 		    port2.digiWrite2(1);
 	      else
 		    port2.digiWrite2(0);
 		  break;
+		case 'u':
+		  // sensor update requested
+		  pending = 1;
 		default:
 		  // bad command; do nothing
 		  break;
@@ -71,7 +83,7 @@ void loop() {
 	  rf12_sendStart(RF12_ACK_REPLY, 0, 0);
   }
 
-  if (sendTimer.poll(2000)) {
+  if (sendTimer.poll(POLL_RATE)) {
     // output sensor readings
     outData[0] = 0 | port1.digiRead()
 				   | (port1.digiRead2() << 1)
@@ -83,10 +95,20 @@ void loop() {
 				   
     outData[1] = port4.anaRead();
 	
-    pending = 1;
+	// only send if the values have changed significantly
+	if (outData[0] != last_digital)
+	  pending = 1;
+	else if (last_analog >= SEND_THRESHOLD 
+			 && last_analog <= WORD_MAX - SEND_THRESHOLD
+			 && (outData[1] < last_analog - SEND_THRESHOLD
+			     || outData[1] > last_analog + SEND_THRESHOLD))
+	  pending = 1;
   }
 
   if (pending && rf12_canSend()) {
+	last_digital = outData[0];
+	last_analog = outData[1];
+	
     rf12_sendStart(MASTER_NODEID, outData, sizeof outData);
     pending = 0;
   }
